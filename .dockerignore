@@ -5,3 +5,4 @@
 aws/deploy
 aws/*.sh
 aws/launcher/*_test.go
+testkit
