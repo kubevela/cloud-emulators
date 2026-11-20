@@ -179,7 +179,8 @@ func setUp(ctx context.Context) (*testkit.Cluster, *testkit.Run, string, func(),
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
-	// Deploys the emulator only when it is missing.
+	// Deploys this release only when the cluster has no emulator. One that is
+	// already running is used as it is, whatever its version.
 	if err := cluster.EnsureAWSEmulator(ctx, "1.0.533"); err != nil {
 		return nil, nil, "", nil, err
 	}
