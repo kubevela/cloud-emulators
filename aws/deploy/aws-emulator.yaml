@@ -1,0 +1,135 @@
+# AWS Emulator for a disposable test cluster (k3d or kind, on a laptop or in a CI job),
+# reachable as plain HTTP at
+#   http://aws-emulator.aws-emulator.svc.cluster.local:4566
+# Do not apply this to a real cluster such as EKS, and do not point a controller that
+# manages real AWS resources at it: see "Where to use it" in the README.
+# Replace VERSION with a published tag, for example:
+#   sed 's/VERSION/1.0.523/g' aws/deploy/aws-emulator.yaml | kubectl apply -f -
+# Each release of this repository carries this file with the version filled in.
+#
+# One emulator per cluster: it has a single account and keeps its state in memory, so
+# the names are fixed, there is one replica, and a rollout stops the old pod before it
+# starts the new one. A second apply with the same version changes nothing.
+#
+# The pod runs as a non-root user with a read-only root filesystem, no Linux
+# capabilities, the runtime's default seccomp profile and no Kubernetes API token. The
+# emulator writes only under its home directory and /tmp, which are memory-backed
+# volumes. The NetworkPolicy lets pods of this cluster reach port 4566 and lets the
+# emulator open no connections of its own.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aws-emulator
+  labels:
+    app.kubernetes.io/part-of: cloud-emulators
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws-emulator
+  namespace: aws-emulator
+  labels:
+    app.kubernetes.io/name: aws-emulator
+    app.kubernetes.io/version: "VERSION"
+    app.kubernetes.io/part-of: cloud-emulators
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aws-emulator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aws-emulator
+        app.kubernetes.io/version: "VERSION"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: aws-emulator
+          image: ghcr.io/kubevela/aws-emulator:VERSION
+          ports:
+            - name: http
+              containerPort: 4566
+          readinessProbe:
+            httpGet:
+              path: /__admin/health
+              port: http
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /__admin/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: home
+              mountPath: /home/nonroot
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: home
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws-emulator
+  namespace: aws-emulator
+  labels:
+    app.kubernetes.io/name: aws-emulator
+    app.kubernetes.io/part-of: cloud-emulators
+spec:
+  selector:
+    app.kubernetes.io/name: aws-emulator
+  ports:
+    - name: http
+      port: 4566
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aws-emulator
+  namespace: aws-emulator
+  labels:
+    app.kubernetes.io/part-of: cloud-emulators
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: aws-emulator
+  policyTypes: ["Ingress", "Egress"]
+  # Any namespace of this cluster may connect, and nothing else: the cluster is a
+  # disposable test cluster and everything in it is part of the test.
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - port: 4566
+  egress: []

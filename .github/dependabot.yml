@@ -1,0 +1,15 @@
+# Keeps the pinned actions, base image digests and Go toolchain current.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /aws
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly

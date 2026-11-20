@@ -1,0 +1,7 @@
+# The build needs go.mod, aws/launcher, the downloaded packages and aws/release-info.
+.git
+.github
+*.md
+aws/deploy
+aws/*.sh
+aws/launcher/*_test.go
