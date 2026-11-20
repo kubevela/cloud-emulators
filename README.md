@@ -164,6 +164,41 @@ docker run -d -p 127.0.0.1:4566:4566 aws-emulator:local
 aws/smoke-test.sh                  # the calls an ACK DynamoDB controller makes
 ```
 
+## Test library
+
+[`testkit`](testkit) is a Go package for test suites that run a cloud controller against
+the emulator. It has no test framework of its own: every function returns an error, so it
+works with Ginkgo, the standard `testing` package or a plain program.
+
+```go
+import "github.com/kubevela/cloud-emulators/testkit"
+
+cluster, err := testkit.Connect()                        // refuses anything but k3d or kind
+err = cluster.EnsureAWSEmulator(ctx, "1.0.533")          // deploys it only when missing
+err = cluster.RequireACKOnEmulator(ctx, "dynamodb")      // refuses a controller that talks to AWS
+run, err := cluster.NewRun(ctx, "dynamodb")              // a namespace and a name prefix of its own
+endpoint, stop, err := cluster.ForwardAWSEmulator(ctx)   // for an AWS client in the test process
+// ... create resources, read them back with the AWS SDK at endpoint ...
+err = cluster.EndRun(ctx, run, owners, dependents)       // waits for the controller to clean up
+```
+
+What it takes care of:
+
+- **Only disposable clusters.** `Connect` returns an error unless the kubeconfig context
+  is a k3d or kind cluster.
+- **One emulator per cluster.** A controller has one endpoint, so tests share the
+  emulator. `EnsureAWSEmulator` uses the one that is running and applies a release
+  manifest only when there is none.
+- **Never real AWS.** `RequireACKOnEmulator` fails when the service's ACK controller is
+  missing, not running, or configured with any endpoint other than the emulator's. Its
+  error carries the install command, which `ACKInstallCommand` also returns.
+- **Runs that do not collide.** `NewRun` gives each run a namespace and an ID to prefix
+  names in the cloud service with. `EndRun` deletes what the run applied, waits until the
+  controller has removed its resources from the service, then deletes the namespace.
+- **Reading ACK status correctly.** `ACKReady` is true only when `ACK.ResourceSynced` is
+  `True` and `ACK.Terminal` is not. A resource the controller gave up on keeps its last
+  Synced value.
+
 ## Layout
 
 ```
@@ -172,6 +207,7 @@ aws/launcher/             starts the emulator and forwards plain HTTP to it
 aws/build.sh              downloads AWS's packages; builds locally
 aws/smoke-test.sh         checks an endpoint as a controller would use it
 aws/deploy/               manifest for a cluster
+testkit/                  Go package that prepares a disposable cluster for emulator tests
 .github/workflows/        tests, scans, publishes and signs an image per AWS Emulator version
 ```
 
