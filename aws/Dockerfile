@@ -9,7 +9,7 @@
 # Every base image is pinned by digest; Dependabot proposes the updates.
 
 # The launcher is a static Go binary, cross-compiled on the build machine.
-FROM --platform=$BUILDPLATFORM golang:1.26-trixie@sha256:cff05dd6b81c901f2e8249eb6f91c69a60451d0f12c26bfef08e476a85b32d4d AS launcher
+FROM --platform=$BUILDPLATFORM golang:1.27-trixie@sha256:f18c3d73a184fb0582828510722e723b63a93f7188d11dd223d9be6f6880e65d AS launcher
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
