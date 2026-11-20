@@ -64,7 +64,8 @@ The endpoint is `http://aws-emulator.aws-emulator.svc.cluster.local:4566`, reach
 from any namespace of that cluster and from nowhere else.
 
 For an ACK controller, set these chart values and give it a credentials Secret with any
-keys:
+keys. Deploy the emulator first: the controller calls STS when it starts and does not
+become ready until the emulator answers.
 
 ```yaml
 aws:
