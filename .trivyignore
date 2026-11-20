@@ -1,0 +1,3 @@
+# KSV-0125 wants images only from a short list of cloud registries. This repository
+# publishes to ghcr.io/kubevela, and the release manifest names the image by digest.
+KSV-0125

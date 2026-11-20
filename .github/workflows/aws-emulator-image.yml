@@ -16,6 +16,7 @@ on:
     paths:
       - "aws/**"
       - "go.mod"
+      - ".trivyignore"
       - ".github/workflows/aws-emulator-image.yml"
 
 permissions: {}
