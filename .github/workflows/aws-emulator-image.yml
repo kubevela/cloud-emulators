@@ -16,6 +16,7 @@ on:
     paths:
       - "aws/**"
       - "go.mod"
+      - "go.sum"
       - ".trivyignore"
       - ".github/workflows/aws-emulator-image.yml"
 
@@ -44,7 +45,9 @@ jobs:
 
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
-          go-version-file: go.mod
+          # The newest patch release of the Go line the modules are written for.
+          go-version: "1.27"
+          check-latest: true
 
       - name: Test the launcher
         run: |
