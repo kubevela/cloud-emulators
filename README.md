@@ -167,31 +167,54 @@ aws/smoke-test.sh                  # the calls an ACK DynamoDB controller makes
 ## Test library
 
 [`testkit`](testkit) is a Go package for test suites that run a cloud controller against
-the emulator. It has no test framework of its own: every function returns an error, so it
-works with Ginkgo, the standard `testing` package or a plain program.
+the emulator. It has no test framework of its own: whatever can fail returns an error, so
+it works with Ginkgo, the standard `testing` package or a plain program.
 
 ```go
 import "github.com/kubevela/cloud-emulators/testkit"
 
-cluster, err := testkit.Connect()                        // refuses anything but k3d or kind
-err = cluster.EnsureAWSEmulator(ctx, "1.0.533")          // deploys it only when missing
-err = cluster.RequireACKOnEmulator(ctx, "dynamodb")      // refuses a controller that talks to AWS
-run, err := cluster.NewRun(ctx, "dynamodb")              // a namespace and a name prefix of its own
-endpoint, stop, err := cluster.ForwardAWSEmulator(ctx)   // for an AWS client in the test process
-// ... create resources, read them back with the AWS SDK at endpoint ...
-err = cluster.EndRun(ctx, run, owners, dependents)       // waits for the controller to clean up
+func setUp(ctx context.Context) (*testkit.Cluster, *testkit.Run, string, func(), error) {
+	cluster, err := testkit.Connect() // refuses anything but a local k3d or kind cluster
+	if err != nil {
+		return nil, nil, "", nil, err
+	}
+	// Deploys the emulator only when it is missing.
+	if err := cluster.EnsureAWSEmulator(ctx, "1.0.533"); err != nil {
+		return nil, nil, "", nil, err
+	}
+	// Stop here if the controller talks to AWS: nothing below may run then.
+	if err := cluster.RequireACKOnEmulator(ctx, "dynamodb"); err != nil {
+		return nil, nil, "", nil, err
+	}
+	run, err := cluster.NewRun(ctx, "dynamodb") // a namespace and a name prefix of its own
+	if err != nil {
+		return nil, nil, "", nil, err
+	}
+	// An endpoint for an AWS client in the test process. Call stop when the tests end.
+	endpoint, stop, err := cluster.ForwardAWSEmulator(ctx)
+	if err != nil {
+		return nil, nil, "", nil, err
+	}
+	return cluster, run, endpoint, stop, nil
+}
+
+// After the tests: stop(), then
+// cluster.EndRun(ctx, run, owners, dependents) // waits for the controller to clean up
 ```
 
 What it takes care of:
 
 - **Only disposable clusters.** `Connect` returns an error unless the kubeconfig context
-  is a k3d or kind cluster.
+  is named like a k3d or kind cluster and its API server is on this machine (loopback,
+  `localhost`, `host.docker.internal`, or the cluster's own node container). The name
+  alone is not trusted.
 - **One emulator per cluster.** A controller has one endpoint, so tests share the
   emulator. `EnsureAWSEmulator` uses the one that is running and applies a release
-  manifest only when there is none.
+  manifest only when its Deployment or its Service is missing.
 - **Never real AWS.** `RequireACKOnEmulator` fails when the service's ACK controller is
-  missing, not running, or configured with any endpoint other than the emulator's. Its
-  error carries the install command, which `ACKInstallCommand` also returns.
+  missing, not running, or configured with any endpoint other than the emulator's. When
+  the controller is not installed, the error carries the install command;
+  `ACKInstallCommand` returns the same command for a given chart version.
 - **Runs that do not collide.** `NewRun` gives each run a namespace and an ID to prefix
   names in the cloud service with. `EndRun` deletes what the run applied, waits until the
   controller has removed its resources from the service, then deletes the namespace.

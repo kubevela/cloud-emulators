@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,13 +38,18 @@ const (
 )
 
 // EnsureAWSEmulator makes sure an AWS Emulator is running on the cluster. One
-// that is already there is used as it is, whatever its version: the emulator is
-// shared by every test on the cluster. When there is none, the manifest of the
-// given kubevela/cloud-emulators release is applied; it names the image by
-// digest. The call returns once the emulator is available, or when ctx ends.
+// that is already there, with its Service, is used as it is, whatever its
+// version: the emulator is shared by every test on the cluster. When the
+// Deployment or the Service is missing, the manifest of the given
+// kubevela/cloud-emulators release is applied; it names the image by digest. The call returns once the emulator is available, or when ctx ends.
 func (c *Cluster) EnsureAWSEmulator(ctx context.Context, version string) error {
 	deployments := c.Kube.AppsV1().Deployments(AWSEmulatorNamespace)
 	_, err := deployments.Get(ctx, AWSEmulatorName, metav1.GetOptions{})
+	if err == nil {
+		// A Deployment without its Service is what an apply that stopped half way
+		// leaves behind: nothing can reach that emulator, so it is repaired below.
+		_, err = c.Kube.CoreV1().Services(AWSEmulatorNamespace).Get(ctx, AWSEmulatorName, metav1.GetOptions{})
+	}
 	switch {
 	case apierrors.IsNotFound(err):
 		url := fmt.Sprintf(awsEmulatorManifest, version)
@@ -79,10 +85,29 @@ func (c *Cluster) EnsureAWSEmulator(ctx context.Context, version string) error {
 	return nil
 }
 
-// ACKInstallCommand is the command that installs the ACK controller of an AWS
-// service pointed at the emulator. version is the chart version; look up the
-// latest one, do not guess it.
-func ACKInstallCommand(service, version string) string {
+var (
+	// An ACK service name is the lower-case AWS service identifier used in chart
+	// and image names, such as "dynamodb" or "s3".
+	ackServiceName = regexp.MustCompile(`^[a-z][a-z0-9]{0,62}$`)
+	chartVersion   = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+-]{0,62}$`)
+)
+
+// ACKInstallCommand is the shell command that installs the ACK controller of
+// an AWS service pointed at the emulator. version is the chart version; look
+// up the latest one, do not guess it. Both arguments end up in a command a
+// person pastes into a shell, so anything but a plain service name and a plain
+// version is an error.
+func ACKInstallCommand(service, version string) (string, error) {
+	if !ackServiceName.MatchString(service) {
+		return "", fmt.Errorf("%q is not an ACK service name such as dynamodb", service)
+	}
+	if !chartVersion.MatchString(version) {
+		return "", fmt.Errorf("%q is not a chart version such as 1.16.0", version)
+	}
+	return ackInstallCommand(service, version), nil
+}
+
+func ackInstallCommand(service, version string) string {
 	return fmt.Sprintf(`kubectl create namespace ack-system
 kubectl -n ack-system create secret generic ack-emulator-credentials \
   --from-literal=credentials=$'[default]\naws_access_key_id = %[3]s\naws_secret_access_key = %[4]s\n'
@@ -97,12 +122,16 @@ helm install ack-%[1]s oci://public.ecr.aws/aws-controllers-k8s/%[1]s-chart --ve
 // service, such as "dynamodb", is installed, running, and configured with the
 // emulator as its endpoint. A controller with another endpoint, or with none,
 // talks to AWS: tests must never create resources through it, so this is the
-// check to run before the first one.
+// check to run before the first one. When the controller is not installed at
+// all, the error carries the command that installs it.
 func (c *Cluster) RequireACKOnEmulator(ctx context.Context, service string) error {
+	if !ackServiceName.MatchString(service) {
+		return fmt.Errorf("%q is not an ACK service name such as dynamodb", service)
+	}
 	group := service + ".services.k8s.aws"
 	if _, err := c.Kube.Discovery().ServerResourcesForGroupVersion(group + "/v1alpha1"); err != nil {
 		return fmt.Errorf("the ACK %s controller is not installed (no API group %s). Install it pointing at the emulator:\n%s",
-			service, group, ACKInstallCommand(service, "<chart version>"))
+			service, group, ackInstallCommand(service, "<chart version>"))
 	}
 
 	all, err := c.Kube.AppsV1().Deployments(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
