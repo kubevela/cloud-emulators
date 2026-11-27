@@ -32,7 +32,7 @@ RUN rpm2cpio /tmp/aws-emulator.rpm | cpio -idm --quiet
 
 # The final image has no shell and no package manager: the C library the emulator
 # needs, CA certificates, the emulator and the launcher. It runs as a non-root user.
-FROM gcr.io/distroless/base-debian13:nonroot@sha256:a08d9054afbaf1af9b90fd02cdc7b32236319b5376d374505a41548d42b0c5db
+FROM gcr.io/distroless/base-debian13:nonroot@sha256:7088bf1cdc94a65af4e0d5ad94518ed489a372dec1ece38ff4411c6c15fb5864
 ARG VERSION=unknown
 LABEL org.opencontainers.image.title="aws-emulator" \
       org.opencontainers.image.description="Unofficial build of AWS Emulator with a plain-HTTP launcher, for test clusters and CI" \
